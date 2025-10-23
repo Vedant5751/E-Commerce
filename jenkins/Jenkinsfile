@@ -1,0 +1,185 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_REGISTRY = 'your-account-id.dkr.ecr.ap-south-1.amazonaws.com'
+        AWS_REGION = 'ap-south-1'
+        KUBECONFIG = credentials('kubeconfig')
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                }
+            }
+        }
+        
+        stage('Build Frontend') {
+            steps {
+                script {
+                    dir('frontend') {
+                        sh 'npm ci'
+                        sh 'npm run build'
+                    }
+                }
+            }
+        }
+        
+        stage('Build Backend') {
+            steps {
+                script {
+                    dir('backend') {
+                        sh 'npm ci'
+                        sh 'npm run build'
+                    }
+                }
+            }
+        }
+        
+        stage('Test') {
+            parallel {
+                stage('Frontend Tests') {
+                    steps {
+                        script {
+                            dir('frontend') {
+                                sh 'npm run test -- --coverage --watchAll=false'
+                            }
+                        }
+                    }
+                }
+                stage('Backend Tests') {
+                    steps {
+                        script {
+                            dir('backend') {
+                                sh 'npm run test -- --coverage'
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Security Scan') {
+            steps {
+                script {
+                    sh 'trivy fs . --format json --output trivy-report.json'
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: '.',
+                        reportFiles: 'trivy-report.json',
+                        reportName: 'Trivy Security Report'
+                    ])
+                }
+            }
+        }
+        
+        stage('Docker Build') {
+            steps {
+                script {
+                    // Build frontend image
+                    sh "docker build -t ${DOCKER_REGISTRY}/ecommerce-frontend:${env.GIT_COMMIT_SHORT} ./frontend"
+                    sh "docker build -t ${DOCKER_REGISTRY}/ecommerce-backend:${env.GIT_COMMIT_SHORT} ./backend"
+                    
+                    // Tag as latest
+                    sh "docker tag ${DOCKER_REGISTRY}/ecommerce-frontend:${env.GIT_COMMIT_SHORT} ${DOCKER_REGISTRY}/ecommerce-frontend:latest"
+                    sh "docker tag ${DOCKER_REGISTRY}/ecommerce-backend:${env.GIT_COMMIT_SHORT} ${DOCKER_REGISTRY}/ecommerce-backend:latest"
+                }
+            }
+        }
+        
+        stage('Docker Scan') {
+            steps {
+                script {
+                    sh "trivy image ${DOCKER_REGISTRY}/ecommerce-frontend:${env.GIT_COMMIT_SHORT}"
+                    sh "trivy image ${DOCKER_REGISTRY}/ecommerce-backend:${env.GIT_COMMIT_SHORT}"
+                }
+            }
+        }
+        
+        stage('Docker Push') {
+            steps {
+                script {
+                    withCredentials([string(credentialsId: 'aws-credentials', variable: 'AWS_CREDENTIALS')]) {
+                        sh 'aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin your-account-id.dkr.ecr.ap-south-1.amazonaws.com'
+                        sh "docker push ${DOCKER_REGISTRY}/ecommerce-frontend:${env.GIT_COMMIT_SHORT}"
+                        sh "docker push ${DOCKER_REGISTRY}/ecommerce-backend:${env.GIT_COMMIT_SHORT}"
+                        sh "docker push ${DOCKER_REGISTRY}/ecommerce-frontend:latest"
+                        sh "docker push ${DOCKER_REGISTRY}/ecommerce-backend:latest"
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to Staging') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                script {
+                    sh "kubectl set image deployment/frontend-deployment frontend=${DOCKER_REGISTRY}/ecommerce-frontend:${env.GIT_COMMIT_SHORT} -n ecommerce"
+                    sh "kubectl set image deployment/backend-deployment backend=${DOCKER_REGISTRY}/ecommerce-backend:${env.GIT_COMMIT_SHORT} -n ecommerce"
+                    sh "kubectl rollout status deployment/frontend-deployment -n ecommerce"
+                    sh "kubectl rollout status deployment/backend-deployment -n ecommerce"
+                }
+            }
+        }
+        
+        stage('Deploy to Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    sh "kubectl set image deployment/frontend-deployment frontend=${DOCKER_REGISTRY}/ecommerce-frontend:${env.GIT_COMMIT_SHORT} -n ecommerce"
+                    sh "kubectl set image deployment/backend-deployment backend=${DOCKER_REGISTRY}/ecommerce-backend:${env.GIT_COMMIT_SHORT} -n ecommerce"
+                    sh "kubectl rollout status deployment/frontend-deployment -n ecommerce"
+                    sh "kubectl rollout status deployment/backend-deployment -n ecommerce"
+                }
+            }
+        }
+        
+        stage('Health Check') {
+            steps {
+                script {
+                    sh 'kubectl get pods -n ecommerce'
+                    sh 'kubectl get services -n ecommerce'
+                    sh 'kubectl get deployments -n ecommerce'
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            script {
+                if (env.BRANCH_NAME == 'main') {
+                    slackSend(
+                        channel: '#devops',
+                        color: 'good',
+                        message: "✅ Production deployment successful!\nCommit: ${env.GIT_COMMIT_SHORT}\nBuild: ${env.BUILD_URL}"
+                    )
+                }
+            }
+        }
+        failure {
+            script {
+                slackSend(
+                    channel: '#devops',
+                    color: 'danger',
+                    message: "❌ Build failed!\nCommit: ${env.GIT_COMMIT_SHORT}\nBuild: ${env.BUILD_URL}"
+                )
+            }
+        }
+    }
+}

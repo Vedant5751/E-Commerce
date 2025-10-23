@@ -1,0 +1,117 @@
+---
+- name: Setup Monitoring Stack
+  hosts: k8s_master
+  become: yes
+  vars:
+    monitoring_namespace: "monitoring"
+
+  tasks:
+    - name: Create monitoring namespace
+      kubernetes.core.k8s:
+        name: "{{ monitoring_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Deploy Prometheus
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ playbook_dir }}/../kubernetes/monitoring-namespace.yaml"
+
+    - name: Deploy Grafana
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ playbook_dir }}/../kubernetes/grafana-deployment.yaml"
+
+    - name: Deploy Prometheus
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ playbook_dir }}/../kubernetes/prometheus-deployment.yaml"
+
+    - name: Wait for Prometheus to be ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ monitoring_namespace }}"
+        name: prometheus
+      register: prometheus_deployment
+      until: prometheus_deployment.resources[0].status.ready_replicas == prometheus_deployment.resources[0].status.replicas
+      retries: 30
+      delay: 10
+
+    - name: Wait for Grafana to be ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ monitoring_namespace }}"
+        name: grafana
+      register: grafana_deployment
+      until: grafana_deployment.resources[0].status.ready_replicas == grafana_deployment.resources[0].status.replicas
+      retries: 30
+      delay: 10
+
+    - name: Create Grafana admin password
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: grafana-admin
+            namespace: "{{ monitoring_namespace }}"
+          type: Opaque
+          data:
+            admin-password: "{{ 'admin123' | b64encode }}"
+
+    - name: Setup Grafana datasources
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: grafana-datasources
+            namespace: "{{ monitoring_namespace }}"
+          data:
+            datasources.yml: |
+              apiVersion: 1
+              datasources:
+                - name: Prometheus
+                  type: prometheus
+                  access: proxy
+                  url: http://prometheus:9090
+                  isDefault: true
+
+    - name: Setup Grafana dashboards
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: grafana-dashboards
+            namespace: "{{ monitoring_namespace }}"
+          data:
+            dashboard.json: |
+              {
+                "dashboard": {
+                  "id": null,
+                  "title": "E-commerce Monitoring",
+                  "tags": ["ecommerce"],
+                  "timezone": "browser",
+                  "panels": [],
+                  "time": {
+                    "from": "now-6h",
+                    "to": "now"
+                  },
+                  "refresh": "5s"
+                }
+              }
+
+    - name: Display monitoring URLs
+      debug:
+        msg: |
+          Monitoring stack deployed successfully!
+          Prometheus: http://prometheus.{{ monitoring_namespace }}.svc.cluster.local:9090
+          Grafana: http://grafana.{{ monitoring_namespace }}.svc.cluster.local:3000
+          Default Grafana credentials: admin/admin123

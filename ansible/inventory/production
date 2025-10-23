@@ -1,0 +1,16 @@
+[all:vars]
+ansible_user=ubuntu
+ansible_ssh_private_key_file=~/.ssh/your-key.pem
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+
+[k8s_master]
+master-1 ansible_host=your-master-ip
+
+[k8s_nodes]
+node-1 ansible_host=your-node-1-ip
+node-2 ansible_host=your-node-2-ip
+node-3 ansible_host=your-node-3-ip
+
+[k8s_cluster:children]
+k8s_master
+k8s_nodes

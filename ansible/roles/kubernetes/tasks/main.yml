@@ -1,0 +1,91 @@
+---
+- name: Install kubectl
+  block:
+    - name: Download kubectl
+      get_url:
+        url: "https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64/kubectl"
+        dest: /usr/local/bin/kubectl
+        mode: "0755"
+      vars:
+        kubectl_version: "v1.28.0"
+
+    - name: Verify kubectl installation
+      command: kubectl version --client
+      register: kubectl_version_output
+      changed_when: false
+
+    - name: Display kubectl version
+      debug:
+        msg: "{{ kubectl_version_output.stdout }}"
+
+- name: Configure kubectl
+  block:
+    - name: Create .kube directory
+      file:
+        path: "{{ ansible_user_dir }}/.kube"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+
+    - name: Copy kubeconfig
+      copy:
+        src: "{{ kubeconfig_path }}"
+        dest: "{{ ansible_user_dir }}/.kube/config"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+      vars:
+        kubeconfig_path: "{{ lookup('env', 'KUBECONFIG') | default('/etc/kubernetes/admin.conf') }}"
+
+- name: Install Helm
+  block:
+    - name: Download Helm
+      get_url:
+        url: "https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz"
+        dest: /tmp/helm.tar.gz
+      vars:
+        helm_version: "v3.12.0"
+
+    - name: Extract Helm
+      unarchive:
+        src: /tmp/helm.tar.gz
+        dest: /tmp/
+        remote_src: yes
+
+    - name: Install Helm binary
+      copy:
+        src: /tmp/linux-amd64/helm
+        dest: /usr/local/bin/helm
+        mode: "0755"
+
+    - name: Verify Helm installation
+      command: helm version
+      register: helm_version_output
+      changed_when: false
+
+    - name: Display Helm version
+      debug:
+        msg: "{{ helm_version_output.stdout }}"
+
+- name: Install Prometheus and Grafana
+  block:
+    - name: Add Helm repositories
+      kubernetes.core.helm_repository:
+        name: prometheus-community
+        repo_url: https://prometheus-community.github.io/helm-charts
+      become: yes
+
+    - name: Install Prometheus
+      kubernetes.core.helm:
+        name: prometheus
+        chart_ref: prometheus-community/kube-prometheus-stack
+        release_namespace: monitoring
+        create_namespace: yes
+        values:
+          grafana:
+            enabled: true
+            adminPassword: admin123
+          prometheus:
+            enabled: true
+      become: yes

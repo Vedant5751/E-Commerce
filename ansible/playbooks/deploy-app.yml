@@ -1,0 +1,113 @@
+---
+- name: Deploy E-commerce Application
+  hosts: k8s_master
+  become: yes
+  vars:
+    namespace: "ecommerce"
+    app_version: "latest"
+
+  tasks:
+    - name: Create namespace
+      kubernetes.core.k8s:
+        name: "{{ namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Apply ConfigMap
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ playbook_dir }}/../kubernetes/configmap.yaml"
+
+    - name: Apply Secrets
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ playbook_dir }}/../kubernetes/secrets.yaml"
+
+    - name: Deploy PostgreSQL
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ playbook_dir }}/../kubernetes/postgres-statefulset.yaml"
+
+    - name: Deploy Redis
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ playbook_dir }}/../kubernetes/redis-deployment.yaml"
+
+    - name: Wait for PostgreSQL to be ready
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ namespace }}"
+        label_selectors:
+          - app=postgres
+      register: postgres_pods
+      until: postgres_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
+      retries: 30
+      delay: 10
+
+    - name: Wait for Redis to be ready
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ namespace }}"
+        label_selectors:
+          - app=redis
+      register: redis_pods
+      until: redis_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
+      retries: 30
+      delay: 10
+
+    - name: Deploy Backend
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ playbook_dir }}/../kubernetes/backend-deployment.yaml"
+
+    - name: Deploy Frontend
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ playbook_dir }}/../kubernetes/frontend-deployment.yaml"
+
+    - name: Deploy Ingress
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ playbook_dir }}/../kubernetes/ingress.yaml"
+
+    - name: Deploy HPA
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ playbook_dir }}/../kubernetes/hpa.yaml"
+
+    - name: Wait for Backend to be ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ namespace }}"
+        name: backend
+      register: backend_deployment
+      until: backend_deployment.resources[0].status.ready_replicas == backend_deployment.resources[0].status.replicas
+      retries: 30
+      delay: 10
+
+    - name: Wait for Frontend to be ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ namespace }}"
+        name: frontend
+      register: frontend_deployment
+      until: frontend_deployment.resources[0].status.ready_replicas == frontend_deployment.resources[0].status.replicas
+      retries: 30
+      delay: 10
+
+    - name: Verify all pods are running
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ namespace }}"
+      register: all_pods
+      failed_when: all_pods.resources | selectattr('status.phase', 'notequalto', 'Running') | list | length > 0
+
+    - name: Display deployment status
+      debug:
+        msg: "Deployment completed successfully. All pods are running."

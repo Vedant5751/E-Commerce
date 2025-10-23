@@ -1,0 +1,21 @@
+# AWS Configuration
+aws_region = "ap-south-1"
+
+# Project Configuration
+project_name = "ecommerce"
+environment  = "production"
+
+# Domain Configuration
+domain_name = "your-domain.com"
+
+# Database Configuration
+db_instance_class     = "db.t3.micro"
+db_allocated_storage  = 20
+
+# Tags
+tags = {
+  Project     = "E-commerce"
+  Environment = "Production"
+  ManagedBy   = "Terraform"
+  Owner       = "DevOps Team"
+}

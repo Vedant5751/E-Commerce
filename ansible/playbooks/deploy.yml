@@ -1,0 +1,143 @@
+---
+- name: Deploy E-commerce Application
+  hosts: kubernetes
+  become: yes
+  gather_facts: yes
+  vars:
+    app_name: ecommerce
+    namespace: ecommerce
+    frontend_replicas: 3
+    backend_replicas: 2
+
+  tasks:
+    - name: Create namespace
+      kubernetes.core.k8s:
+        name: "{{ namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Deploy frontend deployment
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: frontend-deployment
+            namespace: "{{ namespace }}"
+          spec:
+            replicas: "{{ frontend_replicas }}"
+            selector:
+              matchLabels:
+                app: frontend
+            template:
+              metadata:
+                labels:
+                  app: frontend
+              spec:
+                containers:
+                  - name: frontend
+                    image: nginx:alpine
+                    ports:
+                      - containerPort: 80
+                    resources:
+                      requests:
+                        memory: "64Mi"
+                        cpu: "250m"
+                      limits:
+                        memory: "128Mi"
+                        cpu: "500m"
+
+    - name: Deploy backend deployment
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: backend-deployment
+            namespace: "{{ namespace }}"
+          spec:
+            replicas: "{{ backend_replicas }}"
+            selector:
+              matchLabels:
+                app: backend
+            template:
+              metadata:
+                labels:
+                  app: backend
+              spec:
+                containers:
+                  - name: backend
+                    image: nginx:alpine
+                    ports:
+                      - containerPort: 80
+                    resources:
+                      requests:
+                        memory: "128Mi"
+                        cpu: "250m"
+                      limits:
+                        memory: "256Mi"
+                        cpu: "500m"
+
+    - name: Deploy frontend service
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: frontend-service
+            namespace: "{{ namespace }}"
+          spec:
+            selector:
+              app: frontend
+            ports:
+              - port: 80
+                targetPort: 80
+            type: ClusterIP
+
+    - name: Deploy backend service
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: backend-service
+            namespace: "{{ namespace }}"
+          spec:
+            selector:
+              app: backend
+            ports:
+              - port: 80
+                targetPort: 80
+            type: ClusterIP
+
+    - name: Wait for deployments to be ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ item }}"
+        namespace: "{{ namespace }}"
+        wait: true
+        wait_condition:
+          type: Available
+          status: "True"
+        wait_timeout: 300
+      loop:
+        - frontend-deployment
+        - backend-deployment
+
+    - name: Display deployment status
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        namespace: "{{ namespace }}"
+      register: deployments
+
+    - name: Show deployment status
+      debug:
+        msg: "Deployment {{ item.metadata.name }} has {{ item.status.readyReplicas }}/{{ item.status.replicas }} replicas ready"
+      loop: "{{ deployments.resources }}"

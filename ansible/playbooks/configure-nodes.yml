@@ -1,0 +1,175 @@
+---
+- name: Configure Kubernetes nodes
+  hosts: k8s_nodes
+  become: yes
+  vars:
+    docker_version: "24.0.7"
+    containerd_version: "1.7.6"
+    kubelet_version: "1.28.2"
+    kubeadm_version: "1.28.2"
+    kubectl_version: "1.28.2"
+
+  tasks:
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        upgrade: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Install required packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - software-properties-common
+          - python3-pip
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce={{ docker_version }}-3~ubuntu.22.04~jammy
+          - docker-ce-cli={{ docker_version }}-3~ubuntu.22.04~jammy
+          - containerd.io={{ containerd_version }}-1
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Start and enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add current user to docker group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+
+    - name: Configure Docker daemon
+      copy:
+        content: |
+          {
+            "exec-opts": ["native.cgroupdriver=systemd"],
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "100m"
+            },
+            "storage-driver": "overlay2"
+          }
+        dest: /etc/docker/daemon.json
+        mode: "0644"
+
+    - name: Restart Docker
+      systemd:
+        name: docker
+        state: restarted
+
+    - name: Add Kubernetes GPG key
+      apt_key:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Add Kubernetes repository
+      apt_repository:
+        repo: "deb https://apt.kubernetes.io/ kubernetes-xenial main"
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install Kubernetes packages
+      apt:
+        name:
+          - kubelet={{ kubelet_version }}-00
+          - kubeadm={{ kubeadm_version }}-00
+          - kubectl={{ kubectl_version }}-00
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Disable swap
+      shell: swapoff -a
+      ignore_errors: yes
+
+    - name: Remove swap from fstab
+      lineinfile:
+        path: /etc/fstab
+        regexp: "^.*swap.*"
+        state: absent
+
+    - name: Configure sysctl for Kubernetes
+      sysctl:
+        name: "{{ item }}"
+        value: "1"
+        state: present
+        reload: yes
+      loop:
+        - net.bridge.bridge-nf-call-iptables
+        - net.bridge.bridge-nf-call-ip6tables
+
+    - name: Load required kernel modules
+      modprobe:
+        name: "{{ item }}"
+      loop:
+        - br_netfilter
+        - overlay
+
+    - name: Make kernel modules persistent
+      lineinfile:
+        path: /etc/modules-load.d/k8s.conf
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - br_netfilter
+        - overlay
+
+    - name: Install monitoring tools
+      apt:
+        name:
+          - htop
+          - iotop
+          - nethogs
+          - nload
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Configure log rotation
+      copy:
+        content: |
+          /var/log/containers/*.log {
+            daily
+            rotate 7
+            compress
+            delaycompress
+            missingok
+            notifempty
+            create 0644 root root
+          }
+        dest: /etc/logrotate.d/containers
+        mode: "0644"
+
+    - name: Set timezone
+      timezone:
+        name: UTC
+
+    - name: Configure NTP
+      systemd:
+        name: systemd-timesyncd
+        state: started
+        enabled: yes

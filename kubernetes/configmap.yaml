@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: ecommerce
+  labels:
+    app: ecommerce
+data:
+  users-table: "ecommerce-prod-users"
+  categories-table: "ecommerce-prod-categories"
+  products-table: "ecommerce-prod-products"
+  cart-items-table: "ecommerce-prod-cart-items"
+  orders-table: "ecommerce-prod-orders"
+  order-items-table: "ecommerce-prod-order-items"
+  environment: "production"
+  log-level: "info"
